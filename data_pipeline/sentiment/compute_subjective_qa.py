@@ -3,46 +3,48 @@ compute_subjective_qa.py
 
 Compute SubjECTive-QA subjectivity scores for QA-pair panels.
 
-Model:  gtfintechlab/SubjECTiveQA-{FEATURE}  (Pardawala et al., NeurIPS 2024)
-  Access: gated repository on Hugging Face. Request access at:
-          https://huggingface.co/gtfintechlab/SubjECTiveQA-ASSERTIVE
+Model:
+    gtfintechlab/SubjECTiveQA-{FEATURE}  (Pardawala et al., NeurIPS 2024)
+    Access: gated repository. Request access at:
+            https://huggingface.co/gtfintechlab/SubjECTiveQA-ASSERTIVE
 
 Six subjectivity dimensions:
     assertive, cautious, optimistic, specific, clear, relevant
 
-Each dimension has three output labels:
-    0 (negative), 1 (neutral), 2 (positive)
+Each dimension is a three-class classifier:
+    0 = negatively demonstrative of the dimension
+    1 = neutral demonstration of the dimension
+    2 = positively demonstrative of the dimension
 
-For each dimension, this script records the softmax probability of each label.
+For each dimension, this script records the softmax probability of each class.
 
-Input format (qa_pair panel):
+Input format:
     CSV with columns: tic, year, quarter, qa_index, Question, Answer, ...
+
+    Input text per row: "Question: {question} Answer: {answer}"
 
 Output columns:
     tic, year, quarter, qa_index,
-    assertive_negative_score, assertive_neutral_score, assertive_positive_score,
-    cautious_negative_score,  cautious_neutral_score,  cautious_positive_score,
+    assertive_negative_score,  assertive_neutral_score,  assertive_positive_score,
+    cautious_negative_score,   cautious_neutral_score,   cautious_positive_score,
     optimistic_negative_score, optimistic_neutral_score, optimistic_positive_score,
-    specific_negative_score,  specific_neutral_score,  specific_positive_score,
-    clear_negative_score,     clear_neutral_score,     clear_positive_score,
-    relevant_negative_score,  relevant_neutral_score,  relevant_positive_score
-
-Input text:
-    Question and Answer are concatenated as:
-    "Question: {question} Answer: {answer}"
+    specific_negative_score,   specific_neutral_score,   specific_positive_score,
+    clear_negative_score,      clear_neutral_score,      clear_positive_score,
+    relevant_negative_score,   relevant_neutral_score,   relevant_positive_score
 
 Usage:
-    # Ensure you have access to the gated models on Hugging Face:
+    # Authenticate with Hugging Face before running (gated model):
     huggingface-cli login
 
-    python compute_subjective_qa.py \\
-        --input_dir  /path/to/transcript_panel/qa \\
-        --output_dir /path/to/sentiment_panel/qa_score \\
+    python compute_subjective_qa.py \
+        --input_dir  /path/to/transcript_panel/qa \
+        --output_dir /path/to/sentiment_panel/qa_score \
         --device     0
 
 Notes:
-    - Each of the six models is loaded sequentially to limit GPU memory usage.
-    - Inference is batched per file; the entire file is held in memory.
+    - Each of the six models is loaded and released sequentially to limit
+      peak GPU memory usage. Total memory required at any time: one model.
+    - Default batch_size is 16; reduce if GPU memory is insufficient.
     - A checkpoint file records completed input files for resume-on-failure.
 """
 
@@ -69,6 +71,7 @@ MODEL_IDS = {
     for feature in FEATURES
 }
 
+# Map HuggingFace label strings to human-readable names.
 LABEL_MAP = {
     "LABEL_0": "negative",
     "LABEL_1": "neutral",
@@ -149,17 +152,15 @@ def score_feature(texts, clf, batch_size, log):
     """
     Run inference for one feature dimension on a list of texts.
 
-    Returns a list of dicts, each with keys 'negative', 'neutral', 'positive'.
+    Returns a list of dicts with keys 'negative', 'neutral', 'positive'.
     """
     results = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         try:
-            predictions = clf(
-                batch, truncation=True, max_length=MAX_LENGTH
-            )
+            predictions = clf(batch, truncation=True, max_length=MAX_LENGTH)
         except RuntimeError as exc:
-            log.error("Inference error on batch %d: %s", i, exc)
+            log.error("Inference error on batch starting at index %d: %s", i, exc)
             predictions = [[]] * len(batch)
 
         for pred in predictions:
@@ -187,8 +188,8 @@ def process_file(input_path, output_path, device, batch_size, log):
         for row in rows
     ]
 
-    # Score each feature dimension sequentially.
-    # Each model is loaded and discarded after use to free GPU memory.
+    # Score each feature dimension sequentially. Each model is loaded and
+    # released after use to keep peak GPU memory to one model at a time.
     feature_scores = {}
     for feature in FEATURES:
         clf = load_classifier(feature, device, log)
@@ -231,7 +232,7 @@ def parse_args():
     p.add_argument("--device", type=int, default=0,
                    help="GPU index. Use -1 for CPU (default: 0).")
     p.add_argument("--checkpoint", default=None,
-                   help="Path to checkpoint file for resuming interrupted runs.")
+                   help="Checkpoint file path for resuming interrupted runs.")
     return p.parse_args()
 
 
@@ -240,7 +241,7 @@ def main():
     log  = setup_logging(args.output_dir)
 
     checkpoint_path = args.checkpoint or os.path.join(
-        args.output_dir, "checkpoint_qa.txt"
+        args.output_dir, "checkpoint_subjective_qa.txt"
     )
     done = load_checkpoint(checkpoint_path)
 
